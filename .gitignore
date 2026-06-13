@@ -1,0 +1,32 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+.env
+.pytest_cache/
+.coverage
+
+# --- Virtual Environment (بما أنك تستخدم .beenvenv) ---
+.beenvenv/
+
+# --- IDE (تعديلات VS Code) ---
+.vscode/
+.idea/
+
+# --- Docker ---
+# تجاهل الملفات التي قد يتم إنشاؤها أثناء بناء الحاويات
+.docker-build/
+# إذا كنت تستخدم ملفات إعدادات محلية للحاويات
+docker-compose.override.yml
+
+# --- Databases (قواعد البيانات المحلية) ---
+*.sqlite3
+*.db
+__pycache__/
+
+# --- OS System Files ---
+.DS_Store
+Thumbs.db

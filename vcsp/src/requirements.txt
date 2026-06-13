@@ -18,7 +18,7 @@ alembic==1.13.1                # Database migrations
 python-jose[cryptography]==3.3.0   # JWT tokens
 passlib[bcrypt]==1.7.4             # Password hashing
 python-dotenv==1.0.1               # Environment variables
-python-multipart==0.0.6           # for streaming multipart 
+python-multipart==0.0.9           # for streaming multipart 
 
 # ============================================================
 # Celery - Task Queue
