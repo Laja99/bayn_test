@@ -1,20 +1,9 @@
 """
-إعداد Alembic للـ migrations.
+Alembic environment — wires SQLAlchemy models to autogenerate.
 
-هذا الملف يربط Alembic بـ SQLAlchemy models عشان يقدر
-يكتشف التغييرات تلقائياً ويولد migration scripts.
-
-أوامر مهمة:
-    # إنشاء migration جديد تلقائياً من التغييرات في الـ models
     alembic revision --autogenerate -m "add user table"
-
-    # تطبيق آخر migration
     alembic upgrade head
-
-    # التراجع عن آخر migration
     alembic downgrade -1
-
-    # عرض التاريخ
     alembic history
 """
 
@@ -28,43 +17,29 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 
-# أضف /app إلى الـ path عشان يقدر يستورد bayn module
+# lets Alembic import the bayn package when run inside the container
 sys.path.insert(0, '/app')
 
-# نستورد config و Base عشان Alembic يعرف الـ models والـ DATABASE_URL
 from bayn.core.config import settings
 from bayn.core.database import Base
 
-# نستورد كل الـ models عشان تظهر في autogenerate
-# (بدون الاستيراد لا يكتشفها Alembic)
-from bayn.features.identity.models import AuthenticaOTPLog, Country, User  # noqa: F401
+# importing every model registers it on Base.metadata so autogenerate sees it
+from bayn.features.identity.models import AuthenticaOTPLog, Country, User
+from bayn.features.catalog.models import Industry, Skill, Specialization, UserSkill, UserSpecialization
 
-# ─────────────────────────────────────────────
-# Alembic Config
-# ─────────────────────────────────────────────
 
 config = context.config
 
-# نقرأ إعدادات الـ logging من alembic.ini
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Base.metadata يحتوي على كل الجداول — هذا ما يستخدمه autogenerate
 target_metadata = Base.metadata
 
-# نمرر الـ DATABASE_URL من settings بدل alembic.ini
+# use the app's DATABASE_URL instead of the placeholder in alembic.ini
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 
-# ─────────────────────────────────────────────
-# Async Migration Functions
-# ─────────────────────────────────────────────
-
 def run_migrations_offline() -> None:
-    """
-    تشغيل migrations بدون اتصال حقيقي بقاعدة البيانات.
-    يولد SQL scripts يمكن تطبيقها لاحقاً.
-    """
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -77,11 +52,10 @@ def run_migrations_offline() -> None:
 
 
 async def run_async_migrations() -> None:
-    """تشغيل migrations عبر اتصال async حقيقي."""
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
-        poolclass=pool.NullPool,  # NullPool مناسب للـ migrations
+        poolclass=pool.NullPool,
     )
 
     async with connectable.connect() as connection:
@@ -97,13 +71,8 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 def run_migrations_online() -> None:
-    """نقطة دخول Alembic للـ migrations الـ online."""
     asyncio.run(run_async_migrations())
 
-
-# ─────────────────────────────────────────────
-# Entry Point
-# ─────────────────────────────────────────────
 
 if context.is_offline_mode():
     run_migrations_offline()

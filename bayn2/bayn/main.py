@@ -1,18 +1,14 @@
-"""
-نقطة دخول التطبيق.
-
-يُشغَّل بـ: uvicorn src.main:app --reload
-"""
+"""App entry point. Run: uvicorn bayn.main:app --reload"""
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from bayn.common.exceptions import AppException
 from bayn.features.identity.router import router as identity_router
+# imported so their tables register on Base.metadata for migrations
+from bayn.features.catalog.models import Industry, Skill, Specialization, UserSkill, UserSpecialization  # noqa: F401
+from bayn.features.catalog.router import catalog_router, profile_router
 
-# ─────────────────────────────────────────────
-# App
-# ─────────────────────────────────────────────
 
 app = FastAPI(
     title="Beyn API",
@@ -21,34 +17,18 @@ app = FastAPI(
 )
 
 
-# ─────────────────────────────────────────────
-# Exception Handler
-# ─────────────────────────────────────────────
-
+# turns any AppException raised in a service into a uniform JSON error response
 @app.exception_handler(AppException)
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
-    """
-    يحول كل AppException لـ JSON response بشكل موحد.
-    الـ service ترمي exceptions، هذا الـ handler يحولها لـ HTTP.
-    """
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.message},
-    )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
 
-
-# ─────────────────────────────────────────────
-# Routers
-# ─────────────────────────────────────────────
 
 app.include_router(identity_router)
+app.include_router(catalog_router)
+app.include_router(profile_router)
 
-
-# ─────────────────────────────────────────────
-# Health Check
-# ─────────────────────────────────────────────
 
 @app.get("/health", tags=["System"])
 async def health_check() -> dict:
-    """يتحقق أن الـ API يعمل — يُستخدم من Docker و load balancer."""
+    # used by Docker and load balancers to check the app is up
     return {"status": "ok"}
