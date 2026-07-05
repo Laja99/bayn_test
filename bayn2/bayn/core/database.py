@@ -15,6 +15,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from bayn.core.config import settings
 
 
+
 engine = create_async_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,
@@ -69,3 +70,6 @@ async def get_db() -> AsyncSession:
             raise
         finally:
             await session.close()
+
+from bayn.features.identity import models as identity_models
+from bayn.features.catalog import models as catalog_models

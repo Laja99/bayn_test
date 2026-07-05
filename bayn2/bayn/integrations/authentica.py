@@ -1,20 +1,61 @@
 """
-Authentica OTP Integration.
+Authentica Integration — OTP via Email & SMS.
 
-الـ API الحقيقي لـ Authentica (https://api.authentica.sa):
+Official docs : https://authenticasa.docs.apiary.io/#reference
+GitHub        : https://github.com/AuthenticaSA/Authentica
+Portal        : https://portal.authentica.sa
 
-الـ flow الصحيح — بدون reference_id:
-1. نرسل طلب إرسال OTP بالقناة (sms/email) والمستقبل (phone/email).
-2. Authentica يرسل الرمز مباشرة للمستخدم — لا يرجع reference_id.
-3. المستخدم يكتب الرمز → نرسله مع نفس المستقبل للتحقق.
-4. Authentica يرجع { verified: true } أو يرفع خطأ.
+────────────────────────────────────────────────────────────
+QUICK REFERENCE
+────────────────────────────────────────────────────────────
+Base URL  : https://api.authentica.sa
+Auth      : X-Authorization: <api_key>
+Headers   : Accept: application/json
+            Content-Type: application/json
 
-الفرق الجوهري عن التصميم الأول:
-- Header المصادقة: X-Authorization (مو Authorization: Bearer)
-- Endpoints: /api/v2/send-otp و /api/v2/verify-otp
-- لا يوجد reference_id — التحقق يتم بـ (phone/email + otp) مباشرة
-- body الإرسال: { method, phone } أو { method, email }
-- body التحقق: { phone, otp } أو { email, otp }
+Send OTP  : POST /api/v2/send-otp
+Verify OTP: POST /api/v2/verify-otp
+Balance   : GET  /api/v2/balance
+
+────────────────────────────────────────────────────────────
+OTP FLOW
+────────────────────────────────────────────────────────────
+1. App → POST /api/v2/send-otp  → Authentica delivers OTP to user
+2. User enters code in your app
+3. App → POST /api/v2/verify-otp → { verified: true/false }
+
+KEY NOTES:
+- Authentica v2 does NOT return a reference_id.
+  Verification uses (email/phone + otp) directly.
+- Phone numbers must be E.164 format: +9665XXXXXXXX
+- Email OTP is FREE. SMS uses credits.
+- OTP never passes through your server — Authentica handles it.
+
+────────────────────────────────────────────────────────────
+SEND OTP — Request body variants
+────────────────────────────────────────────────────────────
+SMS:
+    { "method": "sms",   "phone": "+9665XXXXXXXX" }
+
+Email:
+    { "method": "email", "email": "user@example.com" }
+
+────────────────────────────────────────────────────────────
+VERIFY OTP — Request body variants
+────────────────────────────────────────────────────────────
+SMS:
+    { "phone": "+9665XXXXXXXX", "otp": "123456" }
+
+Email:
+    { "email": "user@example.com", "otp": "123456" }
+
+────────────────────────────────────────────────────────────
+COMMON ERRORS
+────────────────────────────────────────────────────────────
+401  → Wrong X-Authorization key or account suspended
+400  → OTP wrong / expired, or invalid phone/email format
+429  → Rate limit hit — slow down requests
+────────────────────────────────────────────────────────────
 """
 
 import httpx
@@ -23,18 +64,26 @@ from bayn.core.config import settings
 
 
 # ─────────────────────────────────────────────
-# Custom Exceptions
+# Exceptions
 # ─────────────────────────────────────────────
 
 class AuthenticaError(Exception):
-    """خطأ عام من Authentica — فشل الاتصال أو خطأ في الـ API."""
+    """
+    Raised when the Authentica API call fails.
+    Covers: network errors, 5xx server errors, bad credentials (401),
+    rate limits (429), and any unexpected non-2xx response.
+    """
     def __init__(self, message: str):
         self.message = message
         super().__init__(message)
 
 
 class AuthenticaOTPInvalid(AuthenticaError):
-    """الرمز اللي أدخله المستخدم غلط أو منتهي الصلاحية."""
+    """
+    Raised when OTP verification returns HTTP 400.
+    Means: the code entered by the user is wrong or has expired.
+    The user should be prompted to request a new code.
+    """
     pass
 
 
@@ -44,65 +93,83 @@ class AuthenticaOTPInvalid(AuthenticaError):
 
 class AuthenticaClient:
     """
-    HTTP client لـ Authentica API v2.
+    Async HTTP client for Authentica API v2.
 
-    التغييرات عن النسخة الأولى:
-    - _headers: استبدلنا Authorization: Bearer بـ X-Authorization
-    - send_email_otp: endpoint صار /api/v2/send-otp، body صار { method, email }
-    - send_sms_otp: نفس الـ endpoint، body صار { method, phone } بـ E.164
-    - verify_otp: انقسم لدالتين (email/phone) لأن الـ body مختلف لكل قناة
-    - حذفنا reference_id تماماً — مو موجود في هذا الـ API
+    Uses httpx.AsyncClient (not requests) because this runs inside
+    FastAPI's async event loop — blocking HTTP calls would freeze
+    the server for all other requests.
+
+    Instantiate once at module level (singleton pattern) and import
+    wherever OTP sending/verifying is needed.
     """
 
     def __init__(self) -> None:
-        self._base_url = settings.AUTHENTICA_BASE_URL
-        self._api_key = settings.AUTHENTICA_API_KEY
-        self._timeout = 10.0
+        self._base_url = settings.AUTHENTICA_BASE_URL   # e.g. https://api.authentica.sa
+        self._api_key  = settings.AUTHENTICA_API_KEY    # from .env — note: may contain $
+        self._timeout  = 10.0                           # seconds before giving up
 
     def _headers(self) -> dict[str, str]:
         """
-        [تغيير] Header المصادقة هو X-Authorization مو Authorization: Bearer.
-        هذا ما تطلبه Authentica بالضبط في docs الرسمية.
+        Standard headers for every Authentica request.
+        X-Authorization is Authentica's specific header name — not Bearer.
         """
         return {
-            "X-Authorization": self._api_key,   # ← كان: Authorization: Bearer
-            "Content-Type": "application/json",
-            "Accept": "application/json",
+            "X-Authorization": self._api_key,
+            "Content-Type":    "application/json",
+            "Accept":          "application/json",
         }
+
+    # ─── Send OTP ─────────────────────────────────────────────────────────
 
     async def send_email_otp(self, email: str) -> None:
         """
-        يرسل OTP للإيميل.
+        Send OTP to an email address (FREE — no credits used).
 
-        [تغيير] endpoint: /api/v2/send-otp (كان /otp/send)
-        [تغيير] body: { method: "email", email: "..." } (كان { channel, recipient })
-        [تغيير] لا يرجع reference_id — الدالة صارت void (None)
+        POST /api/v2/send-otp
+        Body: { "method": "email", "email": "<email>" }
+
+        Args:
+            email: recipient email address
+
+        Returns:
+            None — v2 API does not return a reference_id
+
+        Raises:
+            AuthenticaError: on any non-2xx response
         """
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
                 f"{self._base_url}/api/v2/send-otp",
                 headers=self._headers(),
-                json={
-                    "method": "email",  # ← كان "channel"
-                    "email": email,     # ← كان "recipient"
-                },
+                json={"method": "email", "email": email},
             )
 
         if not response.is_success:
-            raise AuthenticaError(f"Failed to send email OTP: {response.text}")
-
-        # [تغيير] لا نقرأ reference_id من الـ response — مو موجود في هذا الـ API
+            raise AuthenticaError(
+                f"Failed to send email OTP | "
+                f"status={response.status_code} | body={response.text}"
+            )
 
     async def send_sms_otp(self, dial_code: str, phone_number: int) -> None:
         """
-        يرسل OTP عبر SMS.
+        Send OTP via SMS (uses credits).
 
-        [تغيير] endpoint: /api/v2/send-otp (كان /otp/send)
-        [تغيير] body: { method: "sms", phone: "+966..." } (كان { channel, recipient })
-        [تغيير] لا يرجع reference_id — الدالة صارت void (None)
+        POST /api/v2/send-otp
+        Body: { "method": "sms", "phone": "+9665XXXXXXXX" }
 
-        phone يجب أن يكون E.164: مفتاح الدولة + الرقم بدون صفر
-        مثال: dial_code="+966", phone_number=501234567 → "+966501234567"
+        Args:
+            dial_code:    country dial code, e.g. "+966"
+            phone_number: local number without country code, e.g. 501234567
+
+        Returns:
+            None — v2 API does not return a reference_id
+
+        Raises:
+            AuthenticaError: on any non-2xx response
+
+        Note:
+            E.164 is built by concatenating: dial_code + phone_number
+            "+966" + 501234567 → "+966501234567"
         """
         full_phone = f"{dial_code}{phone_number}"
 
@@ -110,53 +177,76 @@ class AuthenticaClient:
             response = await client.post(
                 f"{self._base_url}/api/v2/send-otp",
                 headers=self._headers(),
-                json={
-                    "method": "sms",        # ← كان "channel"
-                    "phone": full_phone,     # ← كان "recipient"
-                },
+                json={"method": "sms", "phone": full_phone},
             )
 
         if not response.is_success:
-            raise AuthenticaError(f"Failed to send SMS OTP: {response.text}")
+            raise AuthenticaError(
+                f"Failed to send SMS OTP | "
+                f"status={response.status_code} | body={response.text}"
+            )
+
+    # ─── Verify OTP ───────────────────────────────────────────────────────
 
     async def verify_email_otp(self, email: str, otp_code: str) -> bool:
         """
-        يتحقق من OTP الإيميل.
+        Verify an OTP code sent to an email address.
 
-        [تغيير] endpoint: /api/v2/verify-otp (كان /otp/verify)
-        [تغيير] body: { email, otp } (كان { reference_id, otp })
-        [تغيير] هذه دالة منفصلة عن التحقق من الهاتف (الـ body مختلف)
+        POST /api/v2/verify-otp
+        Body: { "email": "<email>", "otp": "<code>" }
 
-        يرجع True إذا تم التحقق بنجاح.
-        يرفع AuthenticaOTPInvalid إذا الرمز غلط أو منتهي.
+        Args:
+            email:    the same email used in send_email_otp
+            otp_code: the code entered by the user
+
+        Returns:
+            True on success
+
+        Raises:
+            AuthenticaOTPInvalid: HTTP 400 — code is wrong or expired
+            AuthenticaError:      any other non-2xx response
         """
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
                 f"{self._base_url}/api/v2/verify-otp",
                 headers=self._headers(),
-                json={
-                    "email": email,      # ← كان reference_id
-                    "otp": otp_code,
-                },
+                json={"email": email, "otp": otp_code},
             )
 
         if response.status_code == 400:
-            raise AuthenticaOTPInvalid("Invalid or expired OTP code")
+            raise AuthenticaOTPInvalid("Invalid or expired OTP — ask user to request a new code")
 
         if not response.is_success:
-            raise AuthenticaError(f"OTP verification failed: {response.text}")
+            raise AuthenticaError(
+                f"Email OTP verification failed | "
+                f"status={response.status_code} | body={response.text}"
+            )
 
         return True
 
-    async def verify_sms_otp(self, dial_code: str, phone_number: int, otp_code: str) -> bool:
+    async def verify_sms_otp(
+        self,
+        dial_code: str,
+        phone_number: int,
+        otp_code: str,
+    ) -> bool:
         """
-        يتحقق من OTP الهاتف.
+        Verify an OTP code sent via SMS.
 
-        [تغيير] endpoint: /api/v2/verify-otp (كان /otp/verify)
-        [تغيير] body: { phone, otp } (كان { reference_id, otp })
-        [تغيير] دالة جديدة منفصلة عن verify_email_otp
+        POST /api/v2/verify-otp
+        Body: { "phone": "+9665XXXXXXXX", "otp": "<code>" }
 
-        يرجع True إذا تم التحقق بنجاح.
+        Args:
+            dial_code:    country dial code, e.g. "+966"
+            phone_number: local number, e.g. 501234567
+            otp_code:     the code entered by the user
+
+        Returns:
+            True on success
+
+        Raises:
+            AuthenticaOTPInvalid: HTTP 400 — code is wrong or expired
+            AuthenticaError:      any other non-2xx response
         """
         full_phone = f"{dial_code}{phone_number}"
 
@@ -164,20 +254,55 @@ class AuthenticaClient:
             response = await client.post(
                 f"{self._base_url}/api/v2/verify-otp",
                 headers=self._headers(),
-                json={
-                    "phone": full_phone,  # ← كان reference_id
-                    "otp": otp_code,
-                },
+                json={"phone": full_phone, "otp": otp_code},
             )
 
         if response.status_code == 400:
-            raise AuthenticaOTPInvalid("Invalid or expired OTP code")
+            raise AuthenticaOTPInvalid("Invalid or expired OTP — ask user to request a new code")
 
         if not response.is_success:
-            raise AuthenticaError(f"OTP verification failed: {response.text}")
+            raise AuthenticaError(
+                f"SMS OTP verification failed | "
+                f"status={response.status_code} | body={response.text}"
+            )
 
         return True
 
+    # ─── Utilities ────────────────────────────────────────────────────────
 
+    async def check_balance(self) -> dict:
+        """
+        Check remaining Authentica credits.
+
+        GET /api/v2/balance
+        Response: { "data": { "balance": 21934 } }
+
+        Useful to monitor before sending bulk OTPs.
+        """
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.get(
+                f"{self._base_url}/api/v2/balance",
+                headers=self._headers(),
+            )
+
+        if not response.is_success:
+            raise AuthenticaError(
+                f"Failed to fetch balance | "
+                f"status={response.status_code} | body={response.text}"
+            )
+
+        return response.json()
+
+
+# ─────────────────────────────────────────────
 # Singleton
+# ─────────────────────────────────────────────
+
+# One shared instance for the entire application.
+# Import it wherever OTP operations are needed:
+#
+#   from bayn.integrations.authentica import authentica_client
+#
+# Don't create new AuthenticaClient() instances inside functions —
+# that would rebuild the object on every request for no benefit.
 authentica_client = AuthenticaClient()
