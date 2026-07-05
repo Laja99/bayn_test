@@ -75,7 +75,7 @@ def _build_user_response(user: User) -> UserResponse:
         national_id=user.national_id,
         email=user.email,
         username=user.username,
-        phone_country=user.phone_country,
+        phone_country_id=user.phone_country_id,
         phone_number=user.phone_number,
         city=user.city,
         industry_id=user.industry_id,
@@ -137,7 +137,7 @@ async def get_user_by_id(db: AsyncSession, user_id: uuid.UUID, locale: str = DEF
     result = await db.execute(
         select(User)
         .where(User.id == user_id, User.deleted_at.is_(None))
-        .options(selectinload(User.phone_country))
+        .options(selectinload(User.phone_country_id))
     )
     user = result.scalar_one_or_none()
     if user is None:
