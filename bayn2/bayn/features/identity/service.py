@@ -102,7 +102,7 @@ async def get_user_by_id(db: AsyncSession, user_id: uuid.UUID, locale: str = DEF
     result = await db.execute(
         select(User)
         .where(User.id == user_id, User.deleted_at.is_(None))
-        .options(selectinload(User.phone_country_id))
+        .options(selectinload(User.phone_country))
     )
     user = result.scalar_one_or_none()
     if user is None:

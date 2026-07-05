@@ -12,12 +12,6 @@ import re
 import uuid
 from datetime import datetime
 from typing import Optional
-from typing import List, Optional
-from sqlalchemy import String, Integer, Float, Boolean, ForeignKey, Enum, ARRAY, text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from bayn.features.identity.models import SpecializationEnum #fix this import path
-from pydantic import BaseModel, Field, HttpUrl, model_validator
-from models import SpecializationEnum
 
 from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
 
@@ -252,66 +246,3 @@ class OTPSendResponse(BaseModel):
 class MessageResponse(BaseModel):
     """Response بسيط لأي عملية ناجحة بدون بيانات إضافية."""
     message: str
-
-# --- Project Schemas ---
-class ProjectBase(BaseModel):
-    title: str = Field(..., max_length=150)
-    description: Optional[str] = Field(None, max_length=1000)
-    project_url: Optional[HttpUrl] = None
-    images: List[str] = []
-
-class ProjectCreate(ProjectBase):
-    pass
-
-class ProjectResponse(ProjectBase):
-    id: uuid.UUID
-
-    class Config:
-        from_attributes = True
-
-# --- Profile Card Schemas ---
-class ProfileUpdate(BaseModel):
-    role: Optional[str] = Field(None, max_length=100)
-    bio: Optional[str] = Field(None, max_length=500)
-    city: Optional[str] = Field(None, max_length=100)
-    skills: List[str] = []
-    specialization: Optional[SpecializationEnum] = None
-    is_available_for_hire: bool = False
-    show_city: bool = True
-
-class ProfileCardResponse(BaseModel):
-    profile_id: uuid.UUID
-    user_id: uuid.UUID
-    role: Optional[str]
-    bio: Optional[str]
-    city: Optional[str]
-    skills: List[str]
-    specialization: Optional[SpecializationEnum]
-    is_available_for_hire: bool
-    average_rating: float = 0.0
-    projects: List[ProjectResponse] = []
-
-    @model_validator(mode="before")
-    def handle_privacy_and_defaults(cls, data):
-        # Extract dictionary format regardless of database object wrapper
-        attrs = data.__dict__ if hasattr(data, "__dict__") else data
-        
-        # If the user toggled city off, mask it in public responses
-        if not attrs.get("show_city", True):
-            attrs["city"] = None
-        return data
-
-    class Config:
-        from_attributes = True
-
-# --- Rating Schemas ---
-class RatingCreate(BaseModel):
-    rating_value: float = Field(..., ge=0.5, le=5.0, description="Supports half ratings, e.g., 4.5")
-    review_text: Optional[str] = Field(None, max_length=500)
-
-    @model_validator(mode="after")
-    def validate_half_intervals(self):
-        if (self.rating_value * 2) % 1 != 0:
-            raise ValueError("Rating must be in intervals of 0.5 stars (e.g., 3.5, 4.0, 4.5)")
-        return self
- 
